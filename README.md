@@ -1,29 +1,22 @@
-# support-triage (private fork)
+# support-triage
 
-[![CI](https://github.com/kgr1115/support-triage/actions/workflows/ci.yml/badge.svg)](https://github.com/kgr1115/support-triage/actions/workflows/ci.yml)
+[![CI](https://github.com/kgr1115/support-triage-public/actions/workflows/ci.yml/badge.svg)](https://github.com/kgr1115/support-triage-public/actions/workflows/ci.yml)
 
 A local-first AI tool for B2B SaaS support teams: classify tickets, retrieve KB context via embeddings, draft citation-grounded responses, and surface the top-3 macros — with an eval harness scoring faithfulness and recall@k.
 
-This is the **private** working fork. Real Zendesk/Salesforce exports live here. The clean, shippable mirror is at `../support-triage-public/`.
+Designed for one operator on one workspace. No SaaS, no multi-tenant, no telemetry.
 
 ## Who this is for
 
-Open-source — anyone running a B2B SaaS support org who wants to evaluate or self-host a local-first triage assistant. The maintainer is dogfooding it as a portfolio piece.
+B2B SaaS support teams who want a local-first triage assistant they can self-host and audit.
 
 ## Screenshots
-
-The agent workstation lives at `frontend/` (Vite + React + TypeScript). Pick a sample
-ticket from the dropdown, click **Triage**, and the right pane fills in with
-classification badges, the top-3 retrieved KB articles (with similarity scores),
-an editable drafted reply with citations highlighted, and the top-3 suggested
-macros — all from a single `POST /triage` call to the FastAPI backend.
 
 Empty state — pick a sample or paste a ticket:
 
 ![empty state](docs/screenshots/01-empty-state.png)
 
-After triage — classification, retrieved KB, drafted reply with `[KB-…]`
-citations:
+After triage — classification, retrieved KB, drafted reply with `[KB-…]` citations:
 
 ![triage result](docs/screenshots/02-triage-result.png)
 
@@ -37,22 +30,23 @@ uv sync && pnpm --dir frontend install
 echo "ANTHROPIC_API_KEY=sk-ant-..." > .env
 
 # run dev — backend on :8000, frontend on :5173 (Vite dev-proxies API calls)
-# Either of these — both spawn both processes with prefixed logs and Ctrl-C
-# propagation. The Python launcher works without GNU make.
+# Either of these — both spawn both processes with prefixed logs.
 uv run python -m scripts.dev
 make dev
 
-# tests
-make test                  # all unit/integration tests (no API calls)
+# tests (no API calls)
+make test
+
+# eval drivers (one runs offline; the others hit Anthropic)
+make eval-retrieval        # recall@k — local sentence-transformers, no key needed
 make eval-classifier       # priority/category/sentiment accuracy
-make eval-retrieval        # recall@k (no API key needed)
 make eval-drafting         # citation-grounded reply + faithfulness
 ```
 
 ## What's here
 
 - `app/` — FastAPI backend.
-  - `main.py` — `/triage` endpoint (classify + retrieve + draft + macros).
+  - `main.py` — `POST /triage` endpoint (classify + retrieve + draft + macros).
   - `classifier.py`, `drafter.py`, `faithfulness.py` — Anthropic-powered components.
   - `retrieval.py` — sentence-transformers + FAISS for KB and macros.
   - `kb.py`, `macros.py`, `fixtures.py`, `schemas.py` — loaders and Pydantic models.
@@ -60,14 +54,20 @@ make eval-drafting         # citation-grounded reply + faithfulness
 - `scripts/` — fixture/KB/macro generators and three eval drivers.
 - `fixtures/synthetic/` — 200 labeled tickets, 26 KB articles, 19 macros.
 - `tests/` — unit + integration tests (mocked LLM, real retrieval).
-- `CLAUDE.md` — standing brief. Read first.
-- `ARCHITECTURE.md` — improvement-pipeline philosophy.
-- `.claude/agents/`, `.claude/skills/`, `.claude/commands/improve.md` — improvement pipeline.
-- `blocked-paths.txt` — paths the publisher refuses to push (PII guard).
+- `CLAUDE.md` — standing brief for Claude Code.
+- `.claude/agents/worker.md`, `.claude/skills/core-workflow/SKILL.md`, `.claude/commands/run.md` — single-agent workflow setup.
+
+## How it works
+
+1. Load tickets from a Zendesk/Salesforce export (or the synthetic fixture set).
+2. Classify each ticket: priority + category + sentiment (Anthropic tool use, prompt-cached).
+3. Embed ticket text with `sentence-transformers/all-MiniLM-L6-v2` and retrieve top-k from a FAISS index over the KB.
+4. Draft a citation-grounded response (Sonnet 4.6) restricted to facts in the retrieved articles or paraphrasing the customer's own report. Citations render inline as `[KB-…]`.
+5. Surface the top-3 most-likely macros via the same embedding similarity over a separate macro index.
 
 ## Eval baselines
 
-Run on the 200-ticket synthetic fixture set. All numbers reproducible from the committed fixtures + a fresh API key. Full breakdown with worst-offender analysis — and a "How to reproduce these numbers" section listing the exact commands and which calls cost API credits — in `eval_runs/2026-04-26-eval-summary.md`.
+Run on the 200-ticket synthetic fixture set. All numbers reproducible from the committed fixtures + a fresh API key.
 
 | Metric | Result | Random / modal baseline |
 |---|---|---|
@@ -79,7 +79,13 @@ Run on the 200-ticket synthetic fixture set. All numbers reproducible from the c
 | recall@5 | 98.9% | 19.2% |
 | Faithfulness | 97.1% | n/a |
 
+- Classifier: `claude-haiku-4-5` with prompt caching.
+- Retrieval: local sentence-transformers + FAISS flat-IP. No API calls.
+- Drafting: `claude-sonnet-4-6`. Faithfulness scored by `claude-haiku-4-5` — a clean-room implementation of the ragas faithfulness metric (decompose answer into atomic claims, judge each against ticket + retrieved KB).
+
 ### Where the evals fail (read-with-self-awareness)
+
+Full breakdown with worst-offender analysis: `eval_runs/2026-04-26-eval-summary.md`.
 
 Category confusion (off-diagonal only):
 
@@ -107,13 +113,9 @@ Dominant failure is `normal → high`: model classifies inconvenience as urgency
 ## Limits and known failure modes
 
 - **Sentiment is barely above modal baseline (63% vs 61%).** The negative/frustrated boundary is fuzzy in calm-toned B2B support text; the model often disagrees with my labels in cases where the labels are arguably wrong. Tighten or scrap in v2.
-- **Drafter occasionally extrapolates beyond KB.** ~17% of responses have at least one unsupported claim, mostly defining KB terms in its own words ("a fresh browser session means…") or predicting outcomes of documented workarounds ("chunking should fix it"). Representative cases analysed in `eval_runs/2026-04-26-eval-summary.md`.
+- **Drafter occasionally extrapolates beyond KB.** ~17% of responses have at least one unsupported claim, mostly defining KB terms in its own words ("a fresh browser session means…") or predicting outcomes of documented workarounds ("chunking should fix it"). Five representative cases analysed in `eval_runs/2026-04-26-eval-summary.md` with proposed prompt mitigations.
 - **Prompt engineering contributes ~28pp of faithfulness.** Re-running the same drafter with a permissive "be helpful" prompt (no grounding rules) yields 69.2% faithfulness vs the strict prompt's 97.1% — same model, same retrieval, same scorer. Drafts get 43% longer and pick up speculation like *"this error typically means…"* and *"the April 24 release probably changed…"* — neither in the KB. Full contrast in `eval_runs/2026-04-26-eval-summary.md`.
-- **Single-provider LLM layer.** Anthropic-only in this build (Sonnet 4.6 drafter, Haiku 4.5 classifier + scorer). No fallback. The original spec referenced a multi-provider "SiftRobust pattern" — that abstraction would slot in at `app/classifier.py` and `app/drafter.py` if needed.
-
-## Improvement pipeline
-
-`/improve` runs: researcher → architect → implementer → tester → publisher (and debugger on failure). See `ARCHITECTURE.md` for the handoff contracts.
+- **Single-provider LLM layer.** Anthropic-only in this build (Sonnet 4.6 drafter, Haiku 4.5 classifier + scorer). No fallback. The original spec referenced a multi-provider abstraction — that would slot in at `app/classifier.py` and `app/drafter.py` if needed.
 
 ## License
 
