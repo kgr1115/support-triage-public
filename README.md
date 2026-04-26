@@ -1,5 +1,7 @@
 # support-triage
 
+[![CI](https://github.com/kgr1115/support-triage-public/actions/workflows/ci.yml/badge.svg)](https://github.com/kgr1115/support-triage-public/actions/workflows/ci.yml)
+
 A local-first AI tool for B2B SaaS support teams: classify tickets, retrieve KB context via embeddings, draft citation-grounded responses, and surface the top-3 macros — with an eval harness scoring faithfulness and recall@k.
 
 Designed for one operator on one workspace. No SaaS, no multi-tenant, no telemetry.
@@ -80,6 +82,40 @@ Run on the 200-ticket synthetic fixture set. All numbers reproducible from the c
 - Classifier: `claude-haiku-4-5` with prompt caching.
 - Retrieval: local sentence-transformers + FAISS flat-IP. No API calls.
 - Drafting: `claude-sonnet-4-6`. Faithfulness scored by `claude-haiku-4-5` — a clean-room implementation of the ragas faithfulness metric (decompose answer into atomic claims, judge each against ticket + retrieved KB).
+
+### Where the evals fail (read-with-self-awareness)
+
+Full breakdown with worst-offender analysis: `eval_runs/2026-04-26-eval-summary.md`.
+
+Category confusion (off-diagonal only):
+
+| true → predicted | count |
+|---|---|
+| `integration_setup` → `bug_report` | 7 |
+| `bug_report` → `integration_setup` | 3 |
+
+Same boundary, both directions — the genuine seam between *integration is misconfigured* and *integration's runtime behavior is buggy*.
+
+Priority confusion (off-diagonal only) — the biggest open gap:
+
+| true → predicted | count |
+|---|---|
+| `normal` → `high` | 26 |
+| `normal` → `low` | 21 |
+| `high` → `urgent` | 13 |
+| `urgent` → `high` | 9 |
+| `low` → `normal` | 5 |
+| `urgent` → `normal` | 1 |
+| `low` → `high` | 1 |
+
+Dominant failure is `normal → high`: model classifies inconvenience as urgency. Reading the misses, ~16pp of the 38pp gap is genuine label ambiguity (*"session expires every 5 min"* defensibly HIGH or NORMAL by org SLA convention) and ~20pp is real model error.
+
+## Limits and known failure modes
+
+- **Sentiment is barely above modal baseline (63% vs 61%).** The negative/frustrated boundary is fuzzy in calm-toned B2B support text; the model often disagrees with my labels in cases where the labels are arguably wrong. Tighten or scrap in v2.
+- **Drafter occasionally extrapolates beyond KB.** ~17% of responses have at least one unsupported claim, mostly defining KB terms in its own words ("a fresh browser session means…") or predicting outcomes of documented workarounds ("chunking should fix it"). Five representative cases analysed in `eval_runs/2026-04-26-eval-summary.md` with proposed prompt mitigations.
+- **No baseline-drafter contrast yet.** The 97.1% faithfulness number needs a permissive-prompt counterpart to put the prompt-engineering delta in context. Tracked as a follow-up eval.
+- **Single-provider LLM layer.** Anthropic-only in this build (Sonnet 4.6 drafter, Haiku 4.5 classifier + scorer). No fallback. The original spec referenced a multi-provider abstraction — that would slot in at `app/classifier.py` and `app/drafter.py` if needed.
 
 ## License
 

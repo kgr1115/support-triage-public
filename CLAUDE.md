@@ -29,25 +29,29 @@ The public release is exercised end-to-end on a synthetic fixture set: 200 plaus
 # install
 uv sync && pnpm --dir frontend install
 
-# dev (umbrella)
-make dev
-# under the hood:
-#   uv run uvicorn app.main:app --reload --port 8000
-#   pnpm --dir frontend dev
+# put the Anthropic API key in .env (gitignored)
+echo "ANTHROPIC_API_KEY=sk-ant-..." > .env
 
-# tests
-uv run pytest
-uv run pytest tests/eval -m "ragas"
+# dev — backend on :8000, frontend on :5173 (Vite dev-proxies API calls)
+uv run python -m scripts.dev   # or `make dev`
+
+# tests (no API calls)
+make test                       # uv run pytest
+
+# eval drivers (under scripts/, not pytest markers)
+make eval-retrieval             # recall@k — local sentence-transformers, no key needed
+make eval-classifier            # priority/category/sentiment accuracy
+make eval-drafting              # drafting + faithfulness
 ```
 
 ## Tech stack
 
-- **Backend:** Python + FastAPI + Pydantic
-- **Frontend:** React (TypeScript), pnpm
-- **Embeddings:** pgvector or FAISS
-- **LLM layer:** multi-provider (Anthropic / OpenAI / local-model fallback)
-- **Eval:** ragas + custom fixtures
-- **Test runner:** pytest
+- **Backend:** Python + FastAPI + Pydantic.
+- **Frontend:** React 19 + TypeScript + Vite + pnpm.
+- **Embeddings + retrieval:** `sentence-transformers/all-MiniLM-L6-v2` + FAISS (`IndexFlatIP`, L2-normalized for cosine similarity). Local, no API key.
+- **LLM layer:** Anthropic only — `claude-sonnet-4-6` drafts replies; `claude-haiku-4-5` classifies and scores faithfulness. Prompt caching on the system blocks. No multi-provider fallback in this build.
+- **Eval:** custom drivers in `scripts/` (`eval_classifier.py`, `eval_retrieval.py`, `eval_drafting.py`). Faithfulness is a clean-room implementation of the ragas metric — decompose the drafted answer into atomic claims and judge each against ticket + retrieved KB. No `ragas` / `langchain` runtime dep.
+- **Test runner:** pytest. Tests mock the Anthropic client; retrieval tests run against the real sentence-transformers model (loaded once per session).
 
 ## Conventions
 
@@ -71,8 +75,8 @@ uv run pytest tests/eval -m "ragas"
 
 - **macro** — pre-canned reply template that support agents apply with one click. The tool surfaces the top-3 likely ones.
 - **KB** — knowledge base. Articles + FAQs that ground the drafted response.
-- **recall@k** — fraction of labeled-relevant KB chunks present in the top-k retrieval result.
-- **faithfulness** — does the drafted response cite only evidence that was actually retrieved (vs. hallucinated). Ragas metric.
+- **recall@k** — fraction of labeled-relevant KB articles present in the top-k retrieval result. Computed by `scripts/eval_retrieval.py` against the `relevant_kb_ids` ground-truth field on each labeled ticket.
+- **faithfulness** — fraction of atomic claims in the drafted response that are supported by either the customer's own ticket or the retrieved KB. Computed by `scripts/eval_drafting.py`; the scoring rubric is in `app/faithfulness.py`. Patterned after the ragas metric of the same name; no `ragas` runtime dep.
 
 ## See also
 
