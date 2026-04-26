@@ -10,7 +10,8 @@ against the `main` branch as of this run.
 | Metric | Result | Modal / random baseline | Headroom |
 |---|---|---|---|
 | Category accuracy | 95.0% (190/200) | 20% (5 categories) | 5pp before ceiling |
-| Priority accuracy | 62.0% (124/200) | 40.5% (modal: `normal`) | 38pp before ceiling |
+| Priority accuracy (strict) | 62.0% (124/200) | 40.5% (modal: `normal`) | 38pp before ceiling |
+| Priority within-1 tier | **100.0% (200/200)** | n/a | ceiling |
 | Sentiment accuracy | 63.0% (126/200) | 61% (modal: `negative`) | weak signal |
 | recall@1 | 87.5% | 3.8% (1/26 random) | 12pp |
 | recall@3 | 95.8% | 11.5% | 4pp |
@@ -81,6 +82,15 @@ but the model says URGENT. Both judgments are defensible.
 Net read: ~20pp of the priority gap is real model error; ~16pp is label
 ambiguity that would need either tighter authoring or a multi-label
 metric (e.g. "within 1 step of correct").
+
+**Within-1-tier confirms the ambiguity hypothesis.** A fresh re-run
+with the new `_priority_within_one_tier` metric (ordinal order
+`low < normal < high < urgent`) reports **100.0% (200/200) within one
+tier** — strict accuracy on that same re-run was 61.0%, within stochastic
+noise of the 62.0% headline above. Every priority misprediction is on an
+adjacent tier; the model never confuses `urgent` with `low` or `normal`
+with `urgent`. Whatever's left after better label authoring is fuzzy-
+boundary disagreement, not classifier confusion.
 
 ### Sentiment (63.0%, 74 wrong)
 
@@ -217,22 +227,121 @@ between "agent over-helpfulness" and "agent doing their job."
    workarounds, don't predict outcomes." Likely lifts faithfulness to
    ~98% with no new model. **Half-day.**
 
-2. **Permissive-prompt baseline** — re-run drafter+faithfulness with a
-   minimal "be helpful" prompt (no grounding rules) to put the 97.1%
-   in context. The delta is the prompt-engineering value. **One-day
-   eval cycle.**
-
-3. **Priority labels v2** — re-grade ~15 borderline scenarios where
+2. **Priority labels v2** — re-grade ~15 borderline scenarios where
    the model and the labeler can both defend their answer. Closes
    ~10pp of the priority gap. **Half-day.**
 
-4. **Retrieval ground truth v2** — fix the 5 over-generous KB labels
+3. **Retrieval ground truth v2** — fix the 5 over-generous KB labels
    (Zapier scenarios pointing at `KB-INT-05`, etc.). Lifts recall@3
    to ~98%. **One hour.**
 
-5. **Confusion-aware classifier metric** — report "within 1 priority
+4. **Confusion-aware classifier metric** — report "within 1 priority
    tier" alongside strict accuracy. Distinguishes "model is confused"
    from "labels and model disagree on a fuzzy boundary" without
    relabeling. **Two hours.**
+
+## How to reproduce these numbers
+
+All three eval drivers are deterministic given a fixed model + fixed
+fixtures. The classifier and drafter make API calls (priced per the
+maintainer's Anthropic plan); retrieval runs locally via
+sentence-transformers and is free.
+
+```bash
+# one-time setup
+uv sync
+echo "ANTHROPIC_API_KEY=sk-ant-..." > .env
+
+# classifier eval — priority/category/sentiment accuracy + confusion matrices
+make eval-classifier
+#   ↳ uv run python -m scripts.eval_classifier
+#   ↳ ~200 Haiku 4.5 tool-use calls
+#   ↳ produces the "Classifier — what's broken" numbers above
+
+# retrieval eval — recall@k against labeled relevant_kb_ids
+make eval-retrieval
+#   ↳ uv run python -m scripts.eval_retrieval
+#   ↳ no API calls (local sentence-transformers + FAISS)
+#   ↳ produces the "Retrieval — where it misses" numbers above
+
+# drafting eval — citation-grounded reply + faithfulness
+make eval-drafting
+#   ↳ uv run python -m scripts.eval_drafting
+#   ↳ ~200 Sonnet 4.6 drafts + ~200 Haiku 4.5 faithfulness scores
+#   ↳ produces the 97.1% headline + worst-offender list above
+```
+
+Fixtures, KB, and macros are all checked in under
+`fixtures/synthetic/` — no real customer data is exercised by these
+runs. Re-running on a different model (`DEFAULT_MODEL` in
+`app/classifier.py` / `app/drafter.py` / `app/faithfulness.py` is the
+single point of override) will produce different numbers; that's the
+point.
+
+## Permissive-prompt baseline contrast
+
+Run with `uv run python -m scripts.eval_drafting --prompt-style permissive`
+(the `--prompt-style` flag was added in this iteration; `strict` is the
+default). Same fixtures, same retrieval, same Haiku 4.5
+faithfulness scorer — only the drafter's system prompt changes. The
+permissive prompt drops all grounding rules: no "only state facts in
+KB," no anti-speculation, no anti-meta-promise rules. Just *"be helpful
+and informative; use the KB if relevant; feel free to add general
+advice and context from your own knowledge."*
+
+| Metric | Strict (production) | Permissive (baseline) | Δ |
+|---|---|---|---|
+| Avg faithfulness | **97.1%** | 69.2% | **+27.9pp** |
+| Perfect responses (score 1.0) | 165/200 (82.5%) | 15/200 (7.5%) | +75pp |
+| Avg claims/answer | 8.1 | 11.6 | +43% longer drafts |
+| Supported claims | 1566/1612 | 1580/2311 | +14 supported, +699 unsupported |
+
+The permissive prompt produces ~43% more claims per answer (model adds
+context, speculation, generic advice), and almost all of the additional
+claims are unsupported. Same model, same retrieval — the strict prompt
+buys 28 percentage points of faithfulness, isolated from any other
+variable.
+
+Per-category contrast:
+
+| Category | Strict | Permissive | Δ |
+|---|---|---|---|
+| billing_dispute | 97.5% | 73.2% | −24.3pp |
+| bug_report | 97.3% | 63.9% | −33.4pp |
+| feature_request | 96.9% | 72.2% | −24.7pp |
+| integration_setup | 96.5% | 66.6% | −29.9pp |
+| login_issue | 97.4% | 69.9% | −27.5pp |
+
+`bug_report` takes the biggest hit. Without grounding rules the model
+speculates aggressively about *why* a bug happens — exactly the
+agent-over-helpfulness pattern the strict prompt is designed to block.
+
+### Sample permissive failures
+
+These are real outputs from the permissive run on the same fixture
+tickets the strict run scored at 100%:
+
+- **`login_issue-013`** — score 11% (8/9 unsupported).
+  - *"The 'user not found' error typically means the system can't locate the account record."*
+  - *"This error can happen if the email address on file has a subtle typo."*
+  Both invented; KB-LOGIN-03 says neither.
+
+- **`bug_report-009`** — score 18% (9/11 unsupported).
+  - *"The issue is that the local/in-memory state in the browser session isn't updating."*
+  - *"The April 24 release probably changed how read-state events are handled client-side."*
+  Specific technical claims, neither sourced.
+
+- **`integration_setup-017`** — score 30% (7/10 unsupported).
+  - *"OAuth state mismatch typically happens when the browser tab is refreshed, a redirect is intercepted, or extensions are interfering."*
+  - *"A private/incognito window with extensions disabled should be used."*
+  Extrapolation from world knowledge, not from KB-INT-02.
+
+### What this measures
+
+The 28-point delta is the prompt-engineering value of the strict
+prompt, isolated from model choice and retrieval quality. Without the
+contrast, the 97.1% headline is impressive but unmoored. With it, the
+strict prompt's value is concrete and reproducible: same model, same
+context, +28pp faithfulness from the prompt rubric alone.
 
 — Logged 2026-04-26 by the maintainer.

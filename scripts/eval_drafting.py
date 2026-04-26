@@ -22,7 +22,12 @@ from pathlib import Path
 
 from anthropic import AsyncAnthropic
 
-from app.drafter import DraftedResponse, draft_response
+from app.drafter import (
+    DRAFTER_SYSTEM_PROMPT,
+    PERMISSIVE_DRAFTER_SYSTEM_PROMPT,
+    DraftedResponse,
+    draft_response,
+)
 from app.faithfulness import FaithfulnessReport, score_faithfulness
 from app.fixtures import load_tickets
 from app.kb import load_articles
@@ -75,12 +80,15 @@ async def _process_one(
     sem: asyncio.Semaphore,
     drafter_limiter: _RateLimiter,
     scorer_limiter: _RateLimiter,
+    system_prompt: str,
 ) -> DraftingRow:
     async with sem:
         t0 = time.perf_counter()
         try:
             await drafter_limiter.acquire()
-            draft = await draft_response(ticket, retrieved, client=client)
+            draft = await draft_response(
+                ticket, retrieved, client=client, system_prompt=system_prompt
+            )
             await scorer_limiter.acquire()
             report = await score_faithfulness(
                 draft.response, retrieved, ticket=ticket, client=client
@@ -110,6 +118,7 @@ async def run(
     concurrency: int,
     drafter_rpm: int,
     scorer_rpm: int,
+    system_prompt: str,
 ) -> list[DraftingRow]:
     index = build_index(list(articles))
     articles_by_id = {a.id: a for a in articles}
@@ -121,7 +130,11 @@ async def run(
     tasks = []
     for t in tickets:
         retrieved = _retrieve_articles(t, index, articles_by_id, k)
-        tasks.append(_process_one(t, retrieved, client, sem, drafter_limiter, scorer_limiter))
+        tasks.append(
+            _process_one(
+                t, retrieved, client, sem, drafter_limiter, scorer_limiter, system_prompt
+            )
+        )
     return await asyncio.gather(*tasks)
 
 
@@ -203,6 +216,16 @@ def main() -> int:
         default=45,
         help="Haiku 4.5 RPM cap (also 50 on the standard tier).",
     )
+    parser.add_argument(
+        "--prompt-style",
+        choices=["strict", "permissive"],
+        default="strict",
+        help=(
+            "Drafter system prompt. 'strict' is the production prompt (citation-grounded, "
+            "no speculation, no meta-promises). 'permissive' is a 'be helpful' baseline "
+            "with no grounding rules — use to compute the prompt-engineering delta."
+        ),
+    )
     args = parser.parse_args()
 
     tickets = load_tickets(args.fixtures)
@@ -210,9 +233,12 @@ def main() -> int:
         tickets = tickets[: args.limit]
     articles = load_articles(args.kb)
 
+    system_prompt = (
+        DRAFTER_SYSTEM_PROMPT if args.prompt_style == "strict" else PERMISSIVE_DRAFTER_SYSTEM_PROMPT
+    )
     print(
         f"Drafting eval: {len(tickets)} tickets, {len(articles)} KB articles, "
-        f"k={args.k}, concurrency={args.concurrency}"
+        f"k={args.k}, concurrency={args.concurrency}, prompt={args.prompt_style}"
     )
     print()
     t0 = time.perf_counter()
@@ -224,6 +250,7 @@ def main() -> int:
             concurrency=args.concurrency,
             drafter_rpm=args.drafter_rpm,
             scorer_rpm=args.scorer_rpm,
+            system_prompt=system_prompt,
         )
     )
     wall = time.perf_counter() - t0

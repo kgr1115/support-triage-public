@@ -97,6 +97,37 @@ def _accuracy(rows: Sequence[EvalRow], attr: str) -> tuple[int, int]:
     return ok, n
 
 
+# Priority is the only ordinal label in the schema; we report a "within-1-tier"
+# accuracy alongside strict accuracy so the report distinguishes "model is
+# confused" (e.g., low<->urgent gaps) from "labels and model disagree on a
+# fuzzy boundary" (e.g., normal<->high) without re-labeling the fixtures.
+# Tier order: low < normal < high < urgent.
+_PRIORITY_TIER_INDEX: dict[Priority, int] = {
+    Priority.LOW: 0,
+    Priority.NORMAL: 1,
+    Priority.HIGH: 2,
+    Priority.URGENT: 3,
+}
+
+
+def _priority_within_one_tier(rows: Sequence[EvalRow]) -> tuple[int, int]:
+    """Count predictions whose ordinal distance from the truth is <= 1.
+
+    Returns (within_1, n) — denominator excludes rows where the classifier errored.
+    """
+    ok = 0
+    n = 0
+    for r in rows:
+        if r.pred is None:
+            continue
+        n += 1
+        true_idx = _PRIORITY_TIER_INDEX[r.ticket.priority]
+        pred_idx = _PRIORITY_TIER_INDEX[r.pred.priority]
+        if abs(true_idx - pred_idx) <= 1:
+            ok += 1
+    return ok, n
+
+
 def _confusion_matrix(rows: Sequence[EvalRow], attr: str) -> dict[tuple[str, str], int]:
     cm: Counter[tuple[str, str]] = Counter()
     for r in rows:
@@ -164,8 +195,11 @@ def _print_report(rows: list[EvalRow], wall_s: float) -> None:
     print(f"Wall time:      {wall_s:.1f}s")
     print()
     if n_ok > 0:
+        pri_w1, _ = _priority_within_one_tier(rows)
         print(f"Category acc:   {cat_ok}/{n_ok}  = {cat_ok / n_ok:.1%}")
         print(f"Priority acc:   {pri_ok}/{n_ok}  = {pri_ok / n_ok:.1%}")
+        print(f"  within-1 tier: {pri_w1}/{n_ok}  = {pri_w1 / n_ok:.1%}  "
+              f"(low<normal<high<urgent; counts predictions within one tier of truth)")
         print(f"Sentiment acc:  {sen_ok}/{n_ok}  = {sen_ok / n_ok:.1%}")
 
         _print_confusion(rows, "category", [c.value for c in Category], "Category")
