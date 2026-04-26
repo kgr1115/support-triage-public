@@ -21,6 +21,18 @@ load_dotenv()
 
 DEFAULT_MODEL = "claude-sonnet-4-6"
 
+PERMISSIVE_DRAFTER_SYSTEM_PROMPT = """\
+You are a B2B SaaS support agent drafting a reply to a customer ticket. The
+customer has described a problem and we've attached some KB articles that
+may be useful.
+
+Be helpful and informative. Use the KB articles when they're relevant, but
+feel free to add general advice and context from your own knowledge of how
+similar products work. Keep the response professional and friendly.
+
+Aim for 3–5 short paragraphs. End with a clear next step.
+"""
+
 DRAFTER_SYSTEM_PROMPT = """\
 You are a B2B SaaS support agent drafting a reply to a customer ticket. The
 customer has described a problem; you've been given KB articles that may or
@@ -95,8 +107,14 @@ async def draft_response(
     *,
     client: AsyncAnthropic | None = None,
     model: str = DEFAULT_MODEL,
+    system_prompt: str = DRAFTER_SYSTEM_PROMPT,
 ) -> DraftedResponse:
-    """Draft a citation-grounded reply for ``ticket`` using ``articles`` as context."""
+    """Draft a reply for ``ticket`` using ``articles`` as context.
+
+    Defaults to the strict citation-grounded prompt. Pass
+    ``system_prompt=PERMISSIVE_DRAFTER_SYSTEM_PROMPT`` to get the
+    "be helpful, no grounding rules" baseline used by the eval contrast.
+    """
     if not articles:
         raise DrafterError("draft_response requires at least one KB article as context.")
     if client is None:
@@ -109,7 +127,7 @@ async def draft_response(
         f"Subject: {ticket.subject}\n\n"
         f"Body: {ticket.body}\n\n"
         "---\n\n"
-        "AVAILABLE KB ARTICLES (these are the only facts you may cite):\n\n"
+        "AVAILABLE KB ARTICLES:\n\n"
         f"{_format_articles(articles)}"
     )
 
@@ -119,7 +137,7 @@ async def draft_response(
         system=[
             {
                 "type": "text",
-                "text": DRAFTER_SYSTEM_PROMPT,
+                "text": system_prompt,
                 "cache_control": {"type": "ephemeral"},
             }
         ],
