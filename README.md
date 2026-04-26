@@ -4,13 +4,23 @@
 
 A local-first AI tool for B2B SaaS support teams: classify tickets, retrieve KB context via embeddings, draft citation-grounded responses, and surface the top-3 macros — with an eval harness scoring faithfulness and recall@k.
 
+📊 **Latest eval cycle** → [`eval_runs/2026-04-26-eval-summary.md`](eval_runs/2026-04-26-eval-summary.md) — strict faithfulness 97.1%, recall@3 95.8%, classifier 95% category / 100% within-1-tier priority. Full worst-offender analysis + reproduction runbook.
+
 Designed for one operator on one workspace. No SaaS, no multi-tenant, no telemetry.
 
 ## Who this is for
 
 B2B SaaS support teams who want a local-first triage assistant they can self-host and audit.
 
-## Screenshots
+## Demo
+
+The agent workstation is `frontend/` (Vite + React + TypeScript). Pick a sample
+ticket from the dropdown, click **Triage**, and the right pane fills in with
+classification badges, the top-3 retrieved KB articles (with similarity scores),
+an editable drafted reply with citations highlighted, and the top-3 suggested
+macros — all from a single `POST /triage` call to the FastAPI backend.
+
+<!-- Once docs/demo.gif exists, replace the two static screenshots below with: ![demo](docs/demo.gif) -->
 
 Empty state — pick a sample or paste a ticket:
 
@@ -110,11 +120,12 @@ Priority confusion (off-diagonal only) — the biggest open gap:
 
 Dominant failure is `normal → high`: model classifies inconvenience as urgency. Reading the misses, ~16pp of the 38pp gap is genuine label ambiguity (*"session expires every 5 min"* defensibly HIGH or NORMAL by org SLA convention) and ~20pp is real model error.
 
-## Limits and known failure modes
+## Limitations
 
+- **Priority classifier: 62% strict, 100% within-1 tier.** Every priority misprediction lands on an adjacent ordinal tier — the strict gap is fuzzy-boundary disagreement (billing/admin requests defensibly HIGH or NORMAL by SLA convention), not classifier confusion. Worst-offender breakdown in [`eval_runs/2026-04-26-eval-summary.md`](eval_runs/2026-04-26-eval-summary.md).
 - **Sentiment is barely above modal baseline (63% vs 61%).** The negative/frustrated boundary is fuzzy in calm-toned B2B support text; the model often disagrees with my labels in cases where the labels are arguably wrong. Tighten or scrap in v2.
 - **Drafter occasionally extrapolates beyond KB.** ~17% of responses have at least one unsupported claim, mostly defining KB terms in its own words ("a fresh browser session means…") or predicting outcomes of documented workarounds ("chunking should fix it"). Five representative cases analysed in `eval_runs/2026-04-26-eval-summary.md` with proposed prompt mitigations.
-- **No baseline-drafter contrast yet.** The 97.1% faithfulness number needs a permissive-prompt counterpart to put the prompt-engineering delta in context. Tracked as a follow-up eval.
+- **Prompt engineering contributes ~28pp of faithfulness.** Re-running the same drafter with a permissive "be helpful" prompt (no grounding rules) yields 69.2% faithfulness vs the strict prompt's 97.1% — same model, same retrieval, same scorer. Drafts get 43% longer and pick up speculation like *"this error typically means…"* and *"the April 24 release probably changed…"* — neither in the KB. Full contrast in [`eval_runs/2026-04-26-eval-summary.md`](eval_runs/2026-04-26-eval-summary.md).
 - **Single-provider LLM layer.** Anthropic-only in this build (Sonnet 4.6 drafter, Haiku 4.5 classifier + scorer). No fallback. The original spec referenced a multi-provider abstraction — that would slot in at `app/classifier.py` and `app/drafter.py` if needed.
 
 ## License
