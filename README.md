@@ -30,6 +30,14 @@ After triage — classification, retrieved KB, drafted reply with `[KB-…]` cit
 
 ![triage result](docs/screenshots/02-triage-result.png)
 
+## Requirements
+
+- **Python**: 3.11+ (managed via [`uv`](https://docs.astral.sh/uv/)).
+- **Node**: 20+ (managed via [`pnpm`](https://pnpm.io/) for the frontend).
+- **OS**: developed on Windows 11; should run on macOS/Linux (no platform-specific code; the dev launcher is pure Python).
+- **API key**: an Anthropic key for end-to-end runs. `make eval-retrieval` runs offline with no API key (see "Try without an API key" below).
+- **Disk**: the FAISS index for the synthetic KB is small (<10 MB). Real KBs scale linearly.
+
 ## Quick start
 
 ```bash
@@ -52,6 +60,21 @@ make eval-retrieval        # recall@k — local sentence-transformers, no key ne
 make eval-classifier       # priority/category/sentiment accuracy
 make eval-drafting         # citation-grounded reply + faithfulness
 ```
+
+## Try without an API key
+
+Before paying for an Anthropic key, you can run the retrieval eval offline:
+
+```bash
+uv sync
+make eval-retrieval
+```
+
+This loads the 200 synthetic tickets + 26 KB articles from `fixtures/synthetic/`, runs `sentence-transformers` + FAISS retrieval, and prints recall@1, @3, @5. No API calls. Should finish in under a minute.
+
+What this DOES tell you: whether the embedding-based retrieval finds the right KB articles for synthetic support tickets across 5 categories.
+
+What this does NOT tell you: classifier accuracy, draft faithfulness, or end-to-end UX. Those need an API key (`make eval-classifier`, `make eval-drafting`, `make dev`).
 
 ## What's here
 
@@ -119,6 +142,17 @@ Priority confusion (off-diagonal only) — the biggest open gap:
 | `low` → `high` | 1 |
 
 Dominant failure is `normal → high`: model classifies inconvenience as urgency. Reading the misses, ~16pp of the 38pp gap is genuine label ambiguity (*"session expires every 5 min"* defensibly HIGH or NORMAL by org SLA convention) and ~20pp is real model error.
+
+## Customize for your org
+
+The reference implementation is opinionated about defaults but the swap-points are isolated:
+
+- **Your KB articles** — replace `fixtures/synthetic/kb/articles.jsonl` with your own JSONL (one JSON object per line: `id`, `title`, `body`, `categories[]`). Restart the app — the FAISS index rebuilds in-memory from the JSONL on startup. The retrieval layer doesn't know or care that the articles are synthetic.
+- **Your tickets** — `fixtures/synthetic/tickets.jsonl` is the labeled fixture set the eval harness uses. For triaging your own tickets, the `/triage` endpoint accepts a `Ticket` POST body directly — see `app/schemas.py:Ticket` for the shape (`subject`, `body`, plus optional `priority`, `category`, `sentiment`, `relevant_kb_ids` for eval). To bulk-triage a Zendesk/Salesforce export, write an adapter that maps export rows into `Ticket` shape and POSTs them to `/triage`.
+- **Your macros** — replace `fixtures/synthetic/macros/macros.jsonl` with your team's canned-reply templates (same JSONL shape: `id`, `title`, `body`, `categories[]`). Restart the app.
+- **Your LLM provider** — the classifier and drafter are in `app/classifier.py` and `app/drafter.py`. Currently Anthropic-only (Sonnet 4.6 drafter, Haiku 4.5 classifier + scorer). Swap to OpenAI / local model by replacing the client construction in those two files. The "Limitations" section below notes the original spec referenced a multi-provider abstraction — that's where it would slot in.
+
+What's NOT a clean swap right now: changing the embedding model means changing it in `app/retrieval.py` (the only place embeddings are loaded). Since the index is rebuilt in-memory on startup, there's no stale-index risk — but if you've persisted an index elsewhere, rebuild it with the new model.
 
 ## Limitations
 
