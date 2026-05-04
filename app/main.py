@@ -18,10 +18,10 @@ from anthropic import AsyncAnthropic
 from fastapi import Depends, FastAPI, HTTPException, Request
 from pydantic import BaseModel, Field
 
-from app.classifier import classify
-from app.drafter import DraftedResponse, draft_response
+from app.drafter import DraftedResponse
 from app.kb import load_articles
 from app.macros import load_macros
+from app.providers import SiftRobustOrchestrator, build_default_orchestrator
 from app.retrieval import build_index
 from app.schemas import Category, Classification, Priority, Sentiment, Ticket
 
@@ -52,12 +52,18 @@ class TriageResponse(BaseModel):
     retrieved_kb: list[RetrievedItem]
     drafted_response: DraftedResponse
     suggested_macros: list[RetrievedItem]
+    classification_provider: str = Field(
+        ..., description="Which LLM provider answered the classify call (e.g. 'anthropic', 'openai'). Surfaces sift-robust fallbacks so silent provider drift is impossible."
+    )
+    drafting_provider: str = Field(
+        ..., description="Which LLM provider answered the draft call. Same audit purpose as classification_provider."
+    )
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    """Build the retrieval indices once on startup. Idempotent — tests can
-    pre-populate ``app.state`` and the loader will skip work."""
+    """Build the retrieval indices + sift-robust orchestrator once on startup.
+    Idempotent — tests can pre-populate ``app.state`` and the loader will skip work."""
     if not hasattr(app.state, "kb_index"):
         articles = load_articles(KB_PATH)
         app.state.kb_index = build_index(articles)
@@ -66,6 +72,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         macros = load_macros(MACRO_PATH)
         app.state.macro_index = build_index(macros)
         app.state.macro_by_id = {m.id: m for m in macros}
+    if not hasattr(app.state, "orchestrator"):
+        app.state.orchestrator = build_default_orchestrator()
     yield
 
 
@@ -92,14 +100,16 @@ def health() -> dict[str, str]:
 async def triage(
     payload: TriageRequest,
     request: Request,
-    client: AsyncAnthropic = Depends(get_client),  # noqa: B008 — FastAPI idiom
+    _: AsyncAnthropic = Depends(get_client),  # noqa: B008 — FastAPI idiom; gate on key presence
 ) -> TriageResponse:
     """Classify, retrieve KB + macros, draft a citation-grounded reply.
 
-    Classification and drafting run in parallel. Retrieval is synchronous (FAISS
-    flat-IP over ~26 articles + 18 macros — sub-100ms).
+    Classification and drafting run in parallel through the sift-robust
+    orchestrator (Anthropic primary; OpenAI fallback if OPENAI_API_KEY is set).
+    Retrieval is synchronous (FAISS flat-IP over ~26 articles + 18 macros — sub-100ms).
     """
     state = request.app.state
+    orchestrator: SiftRobustOrchestrator = state.orchestrator
     query = f"{payload.subject}\n\n{payload.body}"
 
     kb_hits = state.kb_index.search(query, k=3)
@@ -118,9 +128,9 @@ async def triage(
         sentiment=Sentiment.NEUTRAL,
     )
 
-    classification, drafted = await asyncio.gather(
-        classify(scratch, client=client),
-        draft_response(scratch, kb_articles, client=client),
+    (classification, classification_provider), (drafted, drafting_provider) = await asyncio.gather(
+        orchestrator.classify(scratch),
+        orchestrator.draft(scratch, kb_articles),
     )
 
     return TriageResponse(
@@ -134,4 +144,6 @@ async def triage(
             RetrievedItem(id=mid, title=state.macro_by_id[mid].title, score=score)
             for mid, score in macro_hits
         ],
+        classification_provider=classification_provider,
+        drafting_provider=drafting_provider,
     )
