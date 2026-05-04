@@ -1,0 +1,35 @@
+{
+  "_comment": "Synthetic Zendesk-shaped ticket export for the reference adapter at scripts/triage_zendesk_export.py. Real Zendesk exports include many more fields (assignee_id, organization_id, custom_fields, etc.) — only `subject` and `description` are needed for /triage. See https://developer.zendesk.com/api-reference/ticketing/tickets/tickets/ for the full Tickets API schema.",
+  "tickets": [
+    {
+      "id": 9001,
+      "subject": "SSO redirect loop after Okta cert rotation",
+      "description": "After our IT team rotated the Okta signing cert yesterday, half our team can't log in — they get redirected back to Okta repeatedly. The other half works fine. Already cleared cookies. Anything we should check on your end?",
+      "status": "open",
+      "priority": "high",
+      "tags": ["sso", "okta", "login"],
+      "created_at": "2026-04-30T14:22:00Z",
+      "requester_id": 4001
+    },
+    {
+      "id": 9002,
+      "subject": "Got charged twice this month",
+      "description": "I see two charges on April 28 and April 29 for our Pro plan. We're only one workspace. Can you refund the duplicate and confirm what happened so it doesn't repeat?",
+      "status": "open",
+      "priority": "normal",
+      "tags": ["billing", "duplicate-charge"],
+      "created_at": "2026-04-30T09:15:00Z",
+      "requester_id": 4002
+    },
+    {
+      "id": 9003,
+      "subject": "Webhook events stopped firing yesterday",
+      "description": "Our integration with our internal CRM stopped receiving events around 3pm PT yesterday. No config changes on our side. The webhook URL still resolves and our endpoint is healthy. Could there be something on the platform side?",
+      "status": "open",
+      "priority": "high",
+      "tags": ["integration", "webhooks"],
+      "created_at": "2026-04-29T22:08:00Z",
+      "requester_id": 4003
+    }
+  ]
+}

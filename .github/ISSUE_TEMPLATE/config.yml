@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: README + adoption guide
+    url: https://github.com/kgr1115/support-triage-public#readme
+    about: Setup, customize-for-your-org, and eval reproduction.
+  - name: Eval reproduction runbook
+    url: https://github.com/kgr1115/support-triage-public/blob/main/eval_runs/2026-04-26-eval-summary.md
+    about: How to reproduce the published eval numbers (faithfulness, recall@k, classifier).
