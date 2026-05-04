@@ -1,56 +1,52 @@
 """Tests for the FastAPI app — /health and /triage.
 
 The /triage endpoint exercises retrieval against the real synthetic KB + macros
-(fast — model is cached) and a mocked Anthropic client (no real API calls).
+(fast — model is cached) and a mocked sift-robust orchestrator (no real API calls).
 """
 
-from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 from fastapi.testclient import TestClient
 
 from app.main import app, get_client
+from app.providers import SiftRobustOrchestrator
+from app.schemas import Category, Classification, Priority, Sentiment
 
 
-def _mock_classifier_response() -> SimpleNamespace:
-    block = SimpleNamespace(
-        type="tool_use",
-        name="classify_ticket",
-        input={
-            "priority": "high",
-            "category": "login_issue",
-            "sentiment": "frustrated",
-        },
+def _mock_classification() -> Classification:
+    return Classification(
+        priority=Priority.HIGH,
+        category=Category.LOGIN,
+        sentiment=Sentiment.FRUSTRATED,
     )
-    return SimpleNamespace(content=[block], stop_reason="tool_use")
 
 
-def _mock_drafter_response() -> SimpleNamespace:
-    block = SimpleNamespace(
-        type="text",
-        text=(
-            "Sorry to hear you're locked out. Per [KB-LOGIN-02], an admin on your "
-            "workspace can disable 2FA on your behalf. Please ask an admin and let "
-            "us know once they've done so."
-        ),
+def _mock_drafted_text() -> str:
+    return (
+        "Sorry to hear you're locked out. Per [KB-LOGIN-02], an admin on your "
+        "workspace can disable 2FA on your behalf. Please ask an admin and let "
+        "us know once they've done so."
     )
-    return SimpleNamespace(content=[block], stop_reason="end_turn")
 
 
-def _mock_anthropic_client() -> AsyncMock:
-    """Return a mock that satisfies both the classifier and drafter calls.
+def _mock_provider(name: str) -> AsyncMock:
+    """Mock provider that returns a fixed classification + drafted response."""
+    from app.drafter import DraftedResponse
 
-    Routing: classifier calls pass tools=[CLASSIFY_TOOL]; drafter calls do not.
-    """
-    client = AsyncMock()
+    provider = AsyncMock()
+    provider.name = name
+    provider.classify.return_value = _mock_classification()
 
-    async def create(**kwargs):
-        if kwargs.get("tools"):
-            return _mock_classifier_response()
-        return _mock_drafter_response()
+    async def _draft(ticket, articles, *, system_prompt=None):
+        return DraftedResponse(
+            ticket_id=ticket.id,
+            retrieved_kb_ids=[a.id for a in articles],
+            response=_mock_drafted_text(),
+            cited_kb_ids=["KB-LOGIN-02"],
+        )
 
-    client.messages.create.side_effect = create
-    return client
+    provider.draft.side_effect = _draft
+    return provider
 
 
 def test_health_returns_ok() -> None:
@@ -61,7 +57,12 @@ def test_health_returns_ok() -> None:
 
 
 def test_triage_returns_full_pipeline_view() -> None:
-    app.dependency_overrides[get_client] = lambda: _mock_anthropic_client()
+    """/triage uses the orchestrator from app.state. We override it with a mock
+    that returns a fixed Classification + DraftedResponse so the test is
+    deterministic and doesn't hit any real API."""
+    primary = _mock_provider("anthropic")
+    app.state.orchestrator = SiftRobustOrchestrator(primary=primary, secondary=None)
+    app.dependency_overrides[get_client] = lambda: AsyncMock()  # bypass api-key gate
     try:
         with TestClient(app) as client:
             payload = {
@@ -89,8 +90,14 @@ def test_triage_returns_full_pipeline_view() -> None:
             assert len(data["suggested_macros"]) == 3
             for m in data["suggested_macros"]:
                 assert {"id", "title", "score"} <= m.keys()
+
+            # provider_used surfaces (sift-robust audit trail)
+            assert data["classification_provider"] == "anthropic"
+            assert data["drafting_provider"] == "anthropic"
     finally:
         app.dependency_overrides.clear()
+        if hasattr(app.state, "orchestrator"):
+            delattr(app.state, "orchestrator")
 
 
 def test_triage_returns_503_without_api_key(monkeypatch) -> None:
