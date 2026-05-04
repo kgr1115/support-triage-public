@@ -53,10 +53,18 @@ class TriageResponse(BaseModel):
     drafted_response: DraftedResponse
     suggested_macros: list[RetrievedItem]
     classification_provider: str = Field(
-        ..., description="Which LLM provider answered the classify call (e.g. 'anthropic', 'openai'). Surfaces sift-robust fallbacks so silent provider drift is impossible."
+        ...,
+        description=(
+            "Which LLM provider answered the classify call (e.g. 'anthropic', 'openai'). "
+            "Surfaces sift-robust fallbacks so silent provider drift is impossible."
+        ),
     )
     drafting_provider: str = Field(
-        ..., description="Which LLM provider answered the draft call. Same audit purpose as classification_provider."
+        ...,
+        description=(
+            "Which LLM provider answered the draft call. "
+            "Same audit purpose as classification_provider."
+        ),
     )
 
 

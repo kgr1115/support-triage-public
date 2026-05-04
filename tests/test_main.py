@@ -4,7 +4,6 @@ The /triage endpoint exercises retrieval against the real synthetic KB + macros
 (fast — model is cached) and a mocked sift-robust orchestrator (no real API calls).
 """
 
-from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 from fastapi.testclient import TestClient
